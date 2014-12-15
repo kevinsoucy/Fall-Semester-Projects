@@ -1,0 +1,186 @@
+/*Load data*/
+data hos1;
+infile "/folders/myfolders/sasuser.v94/hospital.txt" DELIMITER=',';
+INPUT ZIP $  HID $ CITY $ STATE $ BEDS RBEDS OUTV ADM SIR SALESY
+         SALES12 HIP95 KNEE95 TH TRAUMA REHAB HIP96
+         KNEE96 FEMUR96;
+run;
+
+data hos1  ;
+set hos1;
+SALES = SALES12 + SALESY;
+IF SALES=0 then SALES=.;
+drop SALES12 SALESY;
+run;
+
+data host  ;
+set hos1;
+Sales = Log(sales+1);
+Beds= sqrt(Beds);
+Rbeds = sqrt(Rbeds);
+OUTV=log(OUTV+1);
+ADM=log(ADM+1);
+SIR=log(SIR+1);
+HIP95 = sqrt(HIP95);
+KNEE95 = sqrt(KNEE95);
+HIP96 = sqrt(HIP96);
+KNEE96 = sqrt(KNEE96);
+FEMUR96 = sqrt(FEMUR96);
+run;
+
+DATA hsubset  ; 
+SET host;
+ID = _N_; 
+X = UNIFORM(161000384); 
+RUN; 
+PROC SORT DATA=hsubset;
+BY X; 
+DATA train  ; 
+SET hsubset; 
+IF _N_ <= 3000; 
+drop X;
+RUN; 
+Data test  ;
+set hsubset;
+IF _N_ > 3000; 
+drop X;
+RUN; 
+
+PROC FACTOR data=train METHOD=PRIN NFACT=1 SCREE out=z noprint;
+var  HIP95 KNEE95 HIP96 KNEE96 FEMUR96;
+RUN;
+
+PROC FACTOR data=train METHOD=PRIN NFACT=2   ROTATE=VARIMAX SCREE out=z1 noprint;
+var  BEDS RBEDS OUTV ADM SIR TH trauma rehab; run;
+
+
+data z ;
+set z (rename=(Factor1=Ops));
+	run;
+data z1  ;
+set z1 (rename=(Factor2=Rhb Factor1=Sz));
+	keep Rhb Sz;
+	run;
+data factors  ;
+	merge z z1; run;
+
+
+
+/*cluster analysis using WARD */
+
+PROC CLUSTER data=factors  noprint METHOD=WARD plots=CCC noprint;
+id HID;
+VAR Ops Sz Rhb;
+run;
+
+PROC TREE  NCL=7 noprint OUT=TXCLUST;
+RUN;
+
+
+/*Summary stats of 7 clusters*/
+
+
+proc sort data=txclust   out=clussort;
+by _NAME_; run; 
+
+proc sort data=factors   out=facsort;
+by HID; run;
+
+data clusts;
+ merge clussort facsort; run;
+proc sort; by cluster; run;
+
+
+proc summary data=clusts print;
+by cluster;
+class cluster;
+var Sales Ops Sz Rhb;
+run;
+
+proc means data=clusts;
+var SALES Ops Sz Rhb;
+output out=d mean= msales mOps mSz mRhb;
+run;
+
+proc print;
+run;
+
+proc means data=clusts;
+by cluster;
+var SALES Ops Sz Rhb;
+output out=c mean= msales mOps mSz mRhb;
+run;
+
+
+PROC SORT DATA=c;
+BY CLUSTER;
+RUN;
+
+
+
+
+/* Choose cluster that is best to target: Target hospitals with low sales that are in clusters that have high sales.
+Ignore low sales clusters, This assumes that cluster 9 is the best one */
+
+data cl6;
+ set clusts;
+if cluster=6;
+run;
+
+data cl7;
+ set clusts;
+if cluster=7;
+run;
+
+
+
+
+PROC reg DATA=cl6;
+model SALES =  Ops Rhb Sz/ P R selection=b  ;
+OUTPUT   OUT=r6 P=PRED R=RESID STDP=STDP;
+run;
+
+PROC reg DATA=cl7;
+model SALES =  Ops Rhb Sz/ P R selection=b  ;
+OUTPUT   OUT=r7 P=PRED R=RESID STDP=STDP;
+run;
+
+
+proc sort data=r6;
+by Resid; 
+run;
+data trgt6;
+set r6;
+where resid < -1 and resid is not null;
+PredSales = (exp(Pred)-1)*1000;
+Sales= (exp(Sales)-1)*1000; 
+PredGain = (PredSales - Sales);
+keep HID Sales PredSales PredGain;run;
+proc sort data=trgt6; by descending PredGain; run;
+proc print; format Sales dollar8. PredSales dollar8. PredGain dollar8.;
+where PredGain > 90000;
+sum PredGain PredSales Sales;
+title 'Predicted Sales and Predicted Gain in Sales';
+title2 “Cluster 6”;
+run;
+
+proc sort data=r7;
+by Resid; 
+run;
+data trgt7;
+set r7;
+where resid < -1 and resid is not null;
+PredSales = (exp(Pred)-1)*1000;
+Sales= (exp(Sales)-1)*1000; 
+PredGain = (PredSales - Sales);
+keep HID Sales PredSales PredGain;run;
+proc sort data=trgt7; by descending PredGain; run;
+proc print; format Sales dollar8. PredSales dollar8. PredGain dollar8.;
+where PredGain > 89199;
+sum PredGain PredSales Sales;
+title 'Predicted Sales and Predicted Gain in Sales';
+title2 “Cluster 7”;
+run;
+
+
+I
